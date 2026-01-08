@@ -94,17 +94,17 @@ jobs:
     - name: Install dependencies
       run: |
         # Determine which package manager to use
-        if [ "${{ env.USE_UV }}" = "true" ] && command -v uv &> /dev/null; then
+        if [ "$USE_UV" = "true" ] && command -v uv &> /dev/null; then
           echo "Using uv for dependency installation..."
           # Install package with dev dependencies using uv
-          uv pip install -e ".[${{ env.DEV_DEPENDENCIES }}]"
+          uv pip install -e ".[$DEV_DEPENDENCIES]"
           # Ensure pytest-cov is installed (required for coverage)
           uv pip install pytest-cov bandit mypy flake8
         else
           echo "Using pip for dependency installation..."
           python -m pip install --upgrade pip
           # Install package with dev dependencies using pip
-          pip install -e ".[${{ env.DEV_DEPENDENCIES }}]"
+          pip install -e ".[$DEV_DEPENDENCIES]"
           # Ensure pytest-cov is installed (required for coverage)
           pip install pytest-cov bandit mypy flake8
         fi
@@ -118,15 +118,15 @@ jobs:
       run: |
         echo "=== Running flake8 linting ==="
         # Check if source and test directories exist
-        if [ -d "${{ env.SOURCE_DIR }}" ]; then
-          SRC_DIRS="${{ env.SOURCE_DIR }}"
+        if [ -d "$SOURCE_DIR" ]; then
+          SRC_DIRS="$SOURCE_DIR"
         else
           SRC_DIRS="."
-          echo "Warning: SOURCE_DIR='${{ env.SOURCE_DIR }}' not found, using current directory"
+          echo "Warning: SOURCE_DIR='$SOURCE_DIR' not found, using current directory"
         fi
         
-        if [ -d "${{ env.TESTS_DIR }}" ] && [ "${{ env.TESTS_DIR }}" != "." ]; then
-          TEST_DIRS="${{ env.TESTS_DIR }}"
+        if [ -d "$TESTS_DIR" ] && [ "$TESTS_DIR" != "." ]; then
+          TEST_DIRS="$TESTS_DIR"
         else
           TEST_DIRS="."
         fi
@@ -134,7 +134,7 @@ jobs:
         # First check for critical errors (fails CI)
         flake8 $SRC_DIRS $TEST_DIRS \
           --count \
-          --select=${{ env.FLAKE8_ERROR_CODES }} \
+          --select=$FLAKE8_ERROR_CODES \
           --show-source \
           --statistics
         
@@ -142,20 +142,20 @@ jobs:
         flake8 $SRC_DIRS $TEST_DIRS \
           --count \
           --exit-zero \
-          --max-complexity=${{ env.FLAKE8_MAX_COMPLEXITY }} \
+          --max-complexity=$FLAKE8_MAX_COMPLEXITY \
           --statistics
     
     # 7. Static type checking with mypy
     - name: Type check with mypy
       run: |
         echo "=== Running mypy type checking ==="
-        if [ -d "${{ env.SOURCE_DIR }}" ]; then
-          mypy ${{ env.SOURCE_DIR }} \
+        if [ -d "$SOURCE_DIR" ]; then
+          mypy $SOURCE_DIR \
             --ignore-missing-imports \
             --show-error-codes \
             --pretty
         else
-          echo "No source directory found at '${{ env.SOURCE_DIR }}', skipping mypy"
+          echo "No source directory found at '$SOURCE_DIR', skipping mypy"
         fi
     
     # 8. Security scanning with bandit
@@ -163,19 +163,19 @@ jobs:
       run: |
         echo "=== Running bandit security scan ==="
         # Determine source directory
-        if [ -d "${{ env.SOURCE_DIR }}" ]; then
-          SCAN_DIR="${{ env.SOURCE_DIR }}"
+        if [ -d "$SOURCE_DIR" ]; then
+          SCAN_DIR="$SOURCE_DIR"
         else
           SCAN_DIR="."
-          echo "Warning: Scanning current directory instead of '${{ env.SOURCE_DIR }}'"
+          echo "Warning: Scanning current directory instead of '$SOURCE_DIR'"
         fi
         
         # Run bandit security scanner
         bandit \
           -r $SCAN_DIR \
-          --skip "${{ env.BANDIT_SKIP_TESTS }}" \
-          -ll "${{ env.BANDIT_CONFIDENCE_LEVEL }}" \
-          -l "${{ env.BANDIT_SEVERITY_LEVEL }}" \
+          --skip "$BANDIT_SKIP_TESTS" \
+          -ll "$BANDIT_CONFIDENCE_LEVEL" \
+          -l "$BANDIT_SEVERITY_LEVEL" \
           -f json \
           -o bandit-report.json \
           || true  # Don't fail CI on bandit warnings
@@ -191,7 +191,7 @@ try:
     with open('bandit-report.json') as f:
         data = json.load(f)
     print(f'Total issues: {len(data.get(\"results\", []))}')
-    for result in data.get(\"results\", [])[:5]:  # Show first 5
+    for result in data.get(\"results\", [])[:5]:
         print(f'  - {result[\"test_name\"]}: {result[\"issue_text\"][:100]}...')
 except Exception as e:
     print(f'Could not parse bandit report: {e}')
@@ -207,17 +207,17 @@ except Exception as e:
         COVERAGE_ARGS=""
         if python -c "import pytest_cov" 2>/dev/null; then
           echo "pytest-cov is installed, enabling coverage"
-          COVERAGE_ARGS="--cov=${{ env.PACKAGE_NAME }} --cov-report=${{ env.COVERAGE_REPORT }}"
-          if [ "${{ env.COVERAGE_THRESHOLD }}" != "0" ]; then
-            COVERAGE_ARGS="$COVERAGE_ARGS --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}"
+          COVERAGE_ARGS="--cov=$PACKAGE_NAME --cov-report=$COVERAGE_REPORT"
+          if [ "$COVERAGE_THRESHOLD" != "0" ]; then
+            COVERAGE_ARGS="$COVERAGE_ARGS --cov-fail-under=$COVERAGE_THRESHOLD"
           fi
         else
           echo "Warning: pytest-cov not installed, running tests without coverage"
         fi
         
         # Run tests
-        echo "Running: pytest $COVERAGE_ARGS ${{ env.PYTEST_ARGS }} ${{ env.TESTS_DIR }}"
-        pytest $COVERAGE_ARGS ${{ env.PYTEST_ARGS }} ${{ env.TESTS_DIR }}
+        echo "Running: pytest $COVERAGE_ARGS $PYTEST_ARGS $TESTS_DIR"
+        pytest $COVERAGE_ARGS $PYTEST_ARGS $TESTS_DIR
         
         # Generate coverage report if available
         if [ -f "coverage.xml" ]; then
@@ -243,17 +243,17 @@ except Exception as e:
         echo "## 📋 Environment"
         echo "- **Python Version:** ${{ matrix.python-version }}"
         echo "- **Runner:** ${{ runner.os }}"
-        echo "- **Package Name:** ${{ env.PACKAGE_NAME }}"
-        echo "- **Source Directory:** ${{ env.SOURCE_DIR }}"
-        echo "- **Tests Directory:** ${{ env.TESTS_DIR }}"
-        echo "- **Package Manager:** ${{ env.USE_UV == 'true' && 'uv' || 'pip' }}"
+        echo "- **Package Name:** $PACKAGE_NAME"
+        echo "- **Source Directory:** $SOURCE_DIR"
+        echo "- **Tests Directory:** $TESTS_DIR"
+        echo "- **Package Manager:** $USE_UV"
         echo ""
         
         echo "## 🛠 Tools & Versions"
-        echo "\`\`\`"
+        echo '```'
         python --version
         python -m pip list | grep -E "(pytest|flake8|mypy|bandit|coverage)" || echo "Some tools not found"
-        echo "\`\`\`"
+        echo '```'
         echo ""
         
         echo "## 📊 Test Results"
@@ -263,9 +263,9 @@ except Exception as e:
         if [ -f ".coverage" ] || [ -f "coverage.xml" ]; then
           echo "✅ **Tests:** Completed with coverage"
           if command -v python -m coverage &> /dev/null; then
-            echo "\`\`\`"
+            echo '```'
             python -m coverage report || echo "No coverage data available"
-            echo "\`\`\`"
+            echo '```'
           fi
         else
           echo "⚠️  **Tests:** No coverage data found"
