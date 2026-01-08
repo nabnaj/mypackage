@@ -1,0 +1,231 @@
+name: Tests  # Name of the workflow displayed in GitHub Actions
+
+# ------------------------------------------------------------------
+# ENVIRONMENT VARIABLES & CONFIGURATION
+# ------------------------------------------------------------------
+env:
+  # Python versions to test against
+  SUPPORTED_PYTHON_VERSIONS: '["3.8", "3.9", "3.10", "3.11", "3.12"]'
+  
+  # Package configuration
+  PACKAGE_NAME: 'mypackage'      # Change this to your actual package name
+  SOURCE_DIR: 'src'              # Directory containing source code
+  TESTS_DIR: 'tests'             # Directory containing tests
+  DEV_DEPENDENCIES: 'dev'        # Extra dependencies for development
+  
+  # Linting & analysis configuration
+  FLAKE8_MAX_COMPLEXITY: '10'
+  FLAKE8_ERROR_CODES: 'E9,F63,F7,F82'  # Critical error codes to fail on
+  
+  # Security scanning configuration
+  BANDIT_SKIP_TESTS: 'B101'      # Skip assert statements check (B101)
+  BANDIT_CONFIDENCE_LEVEL: 'high'  # Only report high confidence issues
+  BANDIT_SEVERITY_LEVEL: 'medium'  # Report medium and high severity issues
+  
+  # Testing configuration
+  COVERAGE_THRESHOLD: '0'        # Minimum coverage percentage (0 = no threshold)
+  COVERAGE_REPORT: 'xml'         # Coverage report format
+  PYTEST_ARGS: '-v --tb=short'   # Pytest arguments
+  
+  # Performance configuration
+  UV_CACHE_DIR: '~/.cache/uv'    # uv package manager cache location
+
+# ------------------------------------------------------------------
+# TRIGGERS: When this workflow runs
+# ------------------------------------------------------------------
+on:
+  push:  # Run on pushes to main/master
+    branches: [ main, master ]
+  pull_request:  # Run on PRs targeting main/master
+    branches: [ main, master ]
+
+# ------------------------------------------------------------------
+# JOBS: The tasks to execute
+# ------------------------------------------------------------------
+jobs:
+  test:
+    # Run on the latest Ubuntu runner
+    runs-on: ubuntu-latest
+    
+    # Strategy for matrix testing across Python versions
+    strategy:
+      matrix:
+        python-version: ${{ fromJSON(env.SUPPORTED_PYTHON_VERSIONS) }}
+      fail-fast: false  # Continue testing even if one version fails
+    
+    # ------------------------------------------------------------------
+    # STEPS: Sequential tasks within the job
+    # ------------------------------------------------------------------
+    steps:
+    
+    # 1. Checkout the repository code
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Fetch all history for proper version tagging
+    
+    # 2. Set up the specified Python version
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    # 3. Install uv package manager (faster than pip)
+    - name: Install uv package manager
+      run: |
+        # Install uv - a fast Python package installer and resolver
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        # Add uv to PATH for subsequent steps
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      # Note: uv is typically faster than pip because:
+      # - Uses Rust for high performance
+      # - Better caching and dependency resolution
+      # - Parallel downloads
+    
+    # 4. Cache uv packages and virtual environments for faster builds
+    - name: Cache uv packages and environments
+      uses: actions/cache@v3
+      with:
+        path: |
+          ${{ env.UV_CACHE_DIR }}
+          .venv  # uv creates virtual environments in .venv by default
+        key: ${{ runner.os }}-uv-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-uv-${{ matrix.python-version }}-
+          ${{ runner.os }}-uv-
+    
+    # 5. Install package dependencies using uv
+    - name: Install dependencies with uv
+      run: |
+        # Sync dependencies (install/update based on lock file)
+        uv sync --frozen --dev
+        
+        # Alternative: Install in development mode (if using setup.py/pip install -e)
+        # uv pip install -e ".[${{ env.DEV_DEPENDENCIES }}]"
+        
+        # Verify installation
+        uv python -c "import sys; print(f'Python {sys.version}')"
+        uv python -m pip list | grep "${{ env.PACKAGE_NAME }}"
+    
+    # 6. Linting with flake8 (code style and quality)
+    - name: Lint with flake8
+      run: |
+        # First check for critical errors (fails CI)
+        flake8 ${{ env.SOURCE_DIR }} ${{ env.TESTS_DIR }} \
+          --count \
+          --select=${{ env.FLAKE8_ERROR_CODES }} \
+          --show-source \
+          --statistics
+        
+        # Then check for style issues (doesn't fail CI)
+        flake8 ${{ env.SOURCE_DIR }} ${{ env.TESTS_DIR }} \
+          --count \
+          --exit-zero \
+          --max-complexity=${{ env.FLAKE8_MAX_COMPLEXITY }} \
+          --statistics
+    
+    # 7. Static type checking with mypy
+    - name: Type check with mypy
+      run: |
+        mypy ${{ env.SOURCE_DIR }} \
+          --ignore-missing-imports \
+          --show-error-codes \
+          --pretty
+    
+    # 8. Security scanning with bandit
+    - name: Security scan with bandit
+      run: |
+        # Install bandit for security scanning
+        uv pip install bandit
+        
+        # Run bandit security scanner
+        # --skip: Skip tests (B101 = assert statements)
+        # -l/--level: Report only issues of this severity level or higher
+        # -ll/--confidence: Report only issues of this confidence level or higher
+        bandit \
+          -r ${{ env.SOURCE_DIR }} \
+          --skip "${{ env.BANDIT_SKIP_TESTS }}" \
+          -ll "${{ env.BANDIT_CONFIDENCE_LEVEL }}" \
+          -l "${{ env.BANDIT_SEVERITY_LEVEL }}" \
+          -f json \
+          -o bandit-report.json \
+          || echo "Bandit scan completed (exit code $?)"
+        
+        # Display summary (always show, even if bandit finds issues)
+        echo "=== Bandit Security Scan Summary ==="
+        echo "Scanned directory: ${{ env.SOURCE_DIR }}"
+        echo "Skipped tests: ${{ env.BANDIT_SKIP_TESTS }}"
+        echo "Minimum confidence: ${{ env.BANDIT_CONFIDENCE_LEVEL }}"
+        echo "Minimum severity: ${{ env.BANDIT_SEVERITY_LEVEL }}"
+    
+    # 9. Run tests with pytest and generate coverage report
+    - name: Test with pytest
+      run: |
+        # Run tests with coverage
+        pytest \
+          --cov=${{ env.PACKAGE_NAME }} \
+          --cov-report=${{ env.COVERAGE_REPORT }} \
+          --cov-fail-under=${{ env.COVERAGE_THRESHOLD }} \
+          ${{ env.PYTEST_ARGS }} \
+          ${{ env.TESTS_DIR }}
+        
+        # Generate human-readable coverage report
+        coverage report -m
+    
+    # 10. Upload coverage results to Codecov
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: true
+        verbose: true
+      if: ${{ always() }}  # Run even if previous steps fail
+    
+    # 11. Comprehensive test summary
+    - name: Generate Test Summary
+      if: always()  # Always run this step for visibility
+      run: |
+        echo "# 🚀 CI/CD Test Summary for ${{ env.PACKAGE_NAME }}"
+        echo ""
+        echo "## 📋 Environment"
+        echo "- **Python Version:** ${{ matrix.python-version }}"
+        echo "- **Runner:** ${{ runner.os }}"
+        echo "- **Source Directory:** ${{ env.SOURCE_DIR }}"
+        echo "- **Tests Directory:** ${{ env.TESTS_DIR }}"
+        echo ""
+        echo "## 🛠 Tools Used"
+        echo "- **Package Manager:** uv (fast Python package installer)"
+        echo "- **Linter:** flake8 (code quality)"
+        echo "- **Type Checker:** mypy (static typing)"
+        echo "- **Security Scanner:** bandit (security analysis)"
+        echo "- **Test Runner:** pytest (testing framework)"
+        echo "- **Coverage:** pytest-cov (code coverage)"
+        echo ""
+        echo "## 📊 Results Summary"
+        echo ""
+        
+        # Check for test results
+        if [ -f "coverage.xml" ]; then
+          echo "✅ **Coverage Report:** Generated successfully"
+          echo "   - File: coverage.xml (uploaded to Codecov)"
+        else
+          echo "❌ **Coverage Report:** Not generated"
+        fi
+        
+        # Check for security report
+        if [ -f "bandit-report.json" ]; then
+          echo "✅ **Security Scan:** Completed"
+          echo "   - Report: bandit-report.json"
+        else
+          echo "⚠️  **Security Scan:** No report generated"
+        fi
+        
+        echo ""
+        echo "## 🔍 Next Steps"
+        echo "- Review any linting or type issues reported above"
+        echo "- Check security scan results in bandit-report.json"
+        echo "- View detailed coverage at: https://app.codecov.io/gh/${{ github.repository }}"
+        echo "- For performance issues, consider caching more aggressively"
+        echo ""
+        echo "---"
+        echo "*Workflow completed at: $(date)*"
