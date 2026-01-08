@@ -158,7 +158,7 @@ jobs:
           echo "No source directory found at '$SOURCE_DIR', skipping mypy"
         fi
     
-    # 8. Security scanning with bandit
+    # 8. Security scanning with bandit - SIMPLIFIED VERSION
     - name: Security scan with bandit
       run: |
         echo "=== Running bandit security scan ==="
@@ -182,20 +182,22 @@ jobs:
         
         echo "Bandit scan completed. Report saved to bandit-report.json"
         
-        # Show quick summary
+        # Show simple summary without complex Python code
         if [ -f "bandit-report.json" ]; then
-          echo "=== Bandit Findings Summary ==="
-          python -c "
-import json
-try:
-    with open('bandit-report.json') as f:
-        data = json.load(f)
-    print(f'Total issues: {len(data.get(\"results\", []))}')
-    for result in data.get(\"results\", [])[:5]:
-        print(f'  - {result[\"test_name\"]}: {result[\"issue_text\"][:100]}...')
-except Exception as e:
-    print(f'Could not parse bandit report: {e}')
-"
+          echo "=== Bandit Scan Summary ==="
+          # Use jq if available for JSON parsing
+          if command -v jq &> /dev/null; then
+            ISSUE_COUNT=$(jq '.results | length' bandit-report.json 2>/dev/null || echo "0")
+            echo "Total issues found: $ISSUE_COUNT"
+            if [ "$ISSUE_COUNT" -gt 0 ]; then
+              echo "First few issues:"
+              jq -r '.results[0:3][] | "  - " + .test_id + ": " + .issue_text[0:80] + "..."' bandit-report.json 2>/dev/null || true
+            fi
+          else
+            # Fallback to grep if jq is not available
+            ISSUE_COUNT=$(grep -c '"issue_text"' bandit-report.json 2>/dev/null || echo "0")
+            echo "Total issues found: $ISSUE_COUNT"
+          fi
         fi
     
     # 9. Run tests with pytest and generate coverage report
@@ -241,12 +243,12 @@ except Exception as e:
         echo "# 🚀 CI/CD Test Summary"
         echo ""
         echo "## 📋 Environment"
-        echo "- **Python Version:** ${{ matrix.python-version }}"
-        echo "- **Runner:** ${{ runner.os }}"
-        echo "- **Package Name:** $PACKAGE_NAME"
-        echo "- **Source Directory:** $SOURCE_DIR"
-        echo "- **Tests Directory:** $TESTS_DIR"
-        echo "- **Package Manager:** $USE_UV"
+        echo "- Python Version: ${{ matrix.python-version }}"
+        echo "- Runner: ${{ runner.os }}"
+        echo "- Package Name: $PACKAGE_NAME"
+        echo "- Source Directory: $SOURCE_DIR"
+        echo "- Tests Directory: $TESTS_DIR"
+        echo "- Package Manager: $USE_UV"
         echo ""
         
         echo "## 🛠 Tools & Versions"
@@ -261,29 +263,29 @@ except Exception as e:
         
         # Check test results
         if [ -f ".coverage" ] || [ -f "coverage.xml" ]; then
-          echo "✅ **Tests:** Completed with coverage"
+          echo "✅ Tests: Completed with coverage"
           if command -v python -m coverage &> /dev/null; then
             echo '```'
             python -m coverage report || echo "No coverage data available"
             echo '```'
           fi
         else
-          echo "⚠️  **Tests:** No coverage data found"
+          echo "⚠️ Tests: No coverage data found"
         fi
         
         # Check linting results
-        echo "✅ **Linting:** Completed (see logs above)"
+        echo "✅ Linting: Completed (see logs above)"
         
         # Check security scan
         if [ -f "bandit-report.json" ]; then
-          BANDIT_COUNT=$(python -c "import json; data=json.load(open('bandit-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "0")
-          if [ "$BANDIT_COUNT" -gt 0 ]; then
-            echo "⚠️  **Security Scan:** Found $BANDIT_COUNT issues (see bandit-report.json)"
+          # Simple check without Python parsing
+          if grep -q '"issue_text"' bandit-report.json 2>/dev/null; then
+            echo "⚠️ Security Scan: Issues found (see bandit-report.json)"
           else
-            echo "✅ **Security Scan:** No issues found"
+            echo "✅ Security Scan: No issues found"
           fi
         else
-          echo "⚠️  **Security Scan:** No report generated"
+          echo "⚠️ Security Scan: No report generated"
         fi
         
         echo ""
@@ -294,9 +296,4 @@ except Exception as e:
         echo ""
         
         # Final status message
-        if [ "${{ job.status }}" = "success" ]; then
-          echo "## 🎉 All checks passed!"
-        else
-          echo "## ❌ Some checks failed"
-          echo "Review the logs above for details."
-        fi
+        echo "## Status: ${{ job.status }}"
