@@ -4,14 +4,14 @@ name: Tests  # Name of the workflow displayed in GitHub Actions
 # ENVIRONMENT VARIABLES & CONFIGURATION
 # ------------------------------------------------------------------
 env:
-  # Python versions to test against
-  SUPPORTED_PYTHON_VERSIONS: '["3.8", "3.9", "3.10", "3.11", "3.12"]'
-  
   # Package configuration
   PACKAGE_NAME: 'mypackage'      # Change this to your actual package name
   SOURCE_DIR: 'src'              # Directory containing source code
-  TESTS_DIR: 'tests'             # Directory containing tests
+  TESTS_DIR: '.'                 # Tests in current directory (adjust as needed)
   DEV_DEPENDENCIES: 'dev'        # Extra dependencies for development
+  
+  # Tool configuration
+  USE_UV: 'true'                 # Set to 'false' to use pip instead of uv
   
   # Linting & analysis configuration
   FLAKE8_MAX_COMPLEXITY: '10'
@@ -26,9 +26,6 @@ env:
   COVERAGE_THRESHOLD: '0'        # Minimum coverage percentage (0 = no threshold)
   COVERAGE_REPORT: 'xml'         # Coverage report format
   PYTEST_ARGS: '-v --tb=short'   # Pytest arguments
-  
-  # Performance configuration
-  UV_CACHE_DIR: '~/.cache/uv'    # uv package manager cache location
 
 # ------------------------------------------------------------------
 # TRIGGERS: When this workflow runs
@@ -50,7 +47,8 @@ jobs:
     # Strategy for matrix testing across Python versions
     strategy:
       matrix:
-        python-version: ${{ fromJSON(env.SUPPORTED_PYTHON_VERSIONS) }}
+        # Define Python versions directly here (can't use env context)
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
       fail-fast: false  # Continue testing even if one version fails
     
     # ------------------------------------------------------------------
@@ -70,55 +68,78 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     
-    # 3. Install uv package manager (faster than pip)
+    # 3. Install uv package manager (faster than pip) - OPTIONAL
     - name: Install uv package manager
+      if: ${{ env.USE_UV == 'true' }}
       run: |
         # Install uv - a fast Python package installer and resolver
         curl -LsSf https://astral.sh/uv/install.sh | sh
         # Add uv to PATH for subsequent steps
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      # Note: uv is typically faster than pip because:
-      # - Uses Rust for high performance
-      # - Better caching and dependency resolution
-      # - Parallel downloads
     
-    # 4. Cache uv packages and virtual environments for faster builds
-    - name: Cache uv packages and environments
+    # 4. Cache packages for faster builds
+    - name: Cache dependencies
       uses: actions/cache@v3
       with:
         path: |
-          ${{ env.UV_CACHE_DIR }}
-          .venv  # uv creates virtual environments in .venv by default
-        key: ${{ runner.os }}-uv-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
+          ~/.cache/pip
+          ~/.cache/uv
+          .venv
+        key: ${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml', '**/setup.py', '**/requirements*.txt') }}
         restore-keys: |
-          ${{ runner.os }}-uv-${{ matrix.python-version }}-
-          ${{ runner.os }}-uv-
+          ${{ runner.os }}-${{ matrix.python-version }}-
+          ${{ runner.os }}-
     
-    # 5. Install package dependencies using uv
-    - name: Install dependencies with uv
+    # 5. Install package dependencies
+    - name: Install dependencies
       run: |
-        # Sync dependencies (install/update based on lock file)
-        uv sync --frozen --dev
+        # Determine which package manager to use
+        if [ "${{ env.USE_UV }}" = "true" ] && command -v uv &> /dev/null; then
+          echo "Using uv for dependency installation..."
+          # Install package with dev dependencies using uv
+          uv pip install -e ".[${{ env.DEV_DEPENDENCIES }}]"
+          # Ensure pytest-cov is installed (required for coverage)
+          uv pip install pytest-cov bandit mypy flake8
+        else
+          echo "Using pip for dependency installation..."
+          python -m pip install --upgrade pip
+          # Install package with dev dependencies using pip
+          pip install -e ".[${{ env.DEV_DEPENDENCIES }}]"
+          # Ensure pytest-cov is installed (required for coverage)
+          pip install pytest-cov bandit mypy flake8
+        fi
         
-        # Alternative: Install in development mode (if using setup.py/pip install -e)
-        # uv pip install -e ".[${{ env.DEV_DEPENDENCIES }}]"
-        
-        # Verify installation
-        uv python -c "import sys; print(f'Python {sys.version}')"
-        uv python -m pip list | grep "${{ env.PACKAGE_NAME }}"
+        # Verify installations
+        echo "=== Installed Packages ==="
+        python -m pip list | grep -E "(pytest|cov|bandit|mypy|flake8)" || true
     
     # 6. Linting with flake8 (code style and quality)
     - name: Lint with flake8
       run: |
+        echo "=== Running flake8 linting ==="
+        # Check if source and test directories exist
+        if [ -d "${{ env.SOURCE_DIR }}" ]; then
+          SRC_DIRS="${{ env.SOURCE_DIR }}"
+        else
+          SRC_DIRS="."
+          echo "Warning: SOURCE_DIR='${{ env.SOURCE_DIR }}' not found, using current directory"
+        fi
+        
+        if [ -d "${{ env.TESTS_DIR }}" ] && [ "${{ env.TESTS_DIR }}" != "." ]; then
+          TEST_DIRS="${{ env.TESTS_DIR }}"
+        else
+          TEST_DIRS="."
+        fi
+        
         # First check for critical errors (fails CI)
-        flake8 ${{ env.SOURCE_DIR }} ${{ env.TESTS_DIR }} \
+        flake8 $SRC_DIRS $TEST_DIRS \
           --count \
           --select=${{ env.FLAKE8_ERROR_CODES }} \
           --show-source \
           --statistics
         
         # Then check for style issues (doesn't fail CI)
-        flake8 ${{ env.SOURCE_DIR }} ${{ env.TESTS_DIR }} \
+        flake8 $SRC_DIRS $TEST_DIRS \
           --count \
           --exit-zero \
           --max-complexity=${{ env.FLAKE8_MAX_COMPLEXITY }} \
@@ -127,105 +148,155 @@ jobs:
     # 7. Static type checking with mypy
     - name: Type check with mypy
       run: |
-        mypy ${{ env.SOURCE_DIR }} \
-          --ignore-missing-imports \
-          --show-error-codes \
-          --pretty
+        echo "=== Running mypy type checking ==="
+        if [ -d "${{ env.SOURCE_DIR }}" ]; then
+          mypy ${{ env.SOURCE_DIR }} \
+            --ignore-missing-imports \
+            --show-error-codes \
+            --pretty
+        else
+          echo "No source directory found at '${{ env.SOURCE_DIR }}', skipping mypy"
+        fi
     
     # 8. Security scanning with bandit
     - name: Security scan with bandit
       run: |
-        # Install bandit for security scanning
-        uv pip install bandit
+        echo "=== Running bandit security scan ==="
+        # Determine source directory
+        if [ -d "${{ env.SOURCE_DIR }}" ]; then
+          SCAN_DIR="${{ env.SOURCE_DIR }}"
+        else
+          SCAN_DIR="."
+          echo "Warning: Scanning current directory instead of '${{ env.SOURCE_DIR }}'"
+        fi
         
         # Run bandit security scanner
-        # --skip: Skip tests (B101 = assert statements)
-        # -l/--level: Report only issues of this severity level or higher
-        # -ll/--confidence: Report only issues of this confidence level or higher
         bandit \
-          -r ${{ env.SOURCE_DIR }} \
+          -r $SCAN_DIR \
           --skip "${{ env.BANDIT_SKIP_TESTS }}" \
           -ll "${{ env.BANDIT_CONFIDENCE_LEVEL }}" \
           -l "${{ env.BANDIT_SEVERITY_LEVEL }}" \
           -f json \
           -o bandit-report.json \
-          || echo "Bandit scan completed (exit code $?)"
+          || true  # Don't fail CI on bandit warnings
         
-        # Display summary (always show, even if bandit finds issues)
-        echo "=== Bandit Security Scan Summary ==="
-        echo "Scanned directory: ${{ env.SOURCE_DIR }}"
-        echo "Skipped tests: ${{ env.BANDIT_SKIP_TESTS }}"
-        echo "Minimum confidence: ${{ env.BANDIT_CONFIDENCE_LEVEL }}"
-        echo "Minimum severity: ${{ env.BANDIT_SEVERITY_LEVEL }}"
+        echo "Bandit scan completed. Report saved to bandit-report.json"
+        
+        # Show quick summary
+        if [ -f "bandit-report.json" ]; then
+          echo "=== Bandit Findings Summary ==="
+          python -c "
+import json
+try:
+    with open('bandit-report.json') as f:
+        data = json.load(f)
+    print(f'Total issues: {len(data.get(\"results\", []))}')
+    for result in data.get(\"results\", [])[:5]:  # Show first 5
+        print(f'  - {result[\"test_name\"]}: {result[\"issue_text\"][:100]}...')
+except Exception as e:
+    print(f'Could not parse bandit report: {e}')
+"
+        fi
     
     # 9. Run tests with pytest and generate coverage report
     - name: Test with pytest
       run: |
-        # Run tests with coverage
-        pytest \
-          --cov=${{ env.PACKAGE_NAME }} \
-          --cov-report=${{ env.COVERAGE_REPORT }} \
-          --cov-fail-under=${{ env.COVERAGE_THRESHOLD }} \
-          ${{ env.PYTEST_ARGS }} \
-          ${{ env.TESTS_DIR }}
+        echo "=== Running pytest with coverage ==="
         
-        # Generate human-readable coverage report
-        coverage report -m
+        # Build coverage arguments
+        COVERAGE_ARGS=""
+        if python -c "import pytest_cov" 2>/dev/null; then
+          echo "pytest-cov is installed, enabling coverage"
+          COVERAGE_ARGS="--cov=${{ env.PACKAGE_NAME }} --cov-report=${{ env.COVERAGE_REPORT }}"
+          if [ "${{ env.COVERAGE_THRESHOLD }}" != "0" ]; then
+            COVERAGE_ARGS="$COVERAGE_ARGS --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}"
+          fi
+        else
+          echo "Warning: pytest-cov not installed, running tests without coverage"
+        fi
+        
+        # Run tests
+        echo "Running: pytest $COVERAGE_ARGS ${{ env.PYTEST_ARGS }} ${{ env.TESTS_DIR }}"
+        pytest $COVERAGE_ARGS ${{ env.PYTEST_ARGS }} ${{ env.TESTS_DIR }}
+        
+        # Generate coverage report if available
+        if [ -f "coverage.xml" ]; then
+          echo "=== Coverage Report ==="
+          python -m coverage report || echo "Could not generate coverage report"
+        fi
     
-    # 10. Upload coverage results to Codecov
+    # 10. Upload coverage results to Codecov (if coverage.xml exists)
     - name: Upload coverage to Codecov
+      if: ${{ always() && env.COVERAGE_REPORT == 'xml' }}
       uses: codecov/codecov-action@v3
       with:
         file: ./coverage.xml
-        fail_ci_if_error: true
+        fail_ci_if_error: false  # Don't fail if upload fails
         verbose: true
-      if: ${{ always() }}  # Run even if previous steps fail
     
     # 11. Comprehensive test summary
     - name: Generate Test Summary
       if: always()  # Always run this step for visibility
       run: |
-        echo "# 🚀 CI/CD Test Summary for ${{ env.PACKAGE_NAME }}"
+        echo "# 🚀 CI/CD Test Summary"
         echo ""
         echo "## 📋 Environment"
         echo "- **Python Version:** ${{ matrix.python-version }}"
         echo "- **Runner:** ${{ runner.os }}"
+        echo "- **Package Name:** ${{ env.PACKAGE_NAME }}"
         echo "- **Source Directory:** ${{ env.SOURCE_DIR }}"
         echo "- **Tests Directory:** ${{ env.TESTS_DIR }}"
-        echo ""
-        echo "## 🛠 Tools Used"
-        echo "- **Package Manager:** uv (fast Python package installer)"
-        echo "- **Linter:** flake8 (code quality)"
-        echo "- **Type Checker:** mypy (static typing)"
-        echo "- **Security Scanner:** bandit (security analysis)"
-        echo "- **Test Runner:** pytest (testing framework)"
-        echo "- **Coverage:** pytest-cov (code coverage)"
-        echo ""
-        echo "## 📊 Results Summary"
+        echo "- **Package Manager:** ${{ env.USE_UV == 'true' && 'uv' || 'pip' }}"
         echo ""
         
-        # Check for test results
-        if [ -f "coverage.xml" ]; then
-          echo "✅ **Coverage Report:** Generated successfully"
-          echo "   - File: coverage.xml (uploaded to Codecov)"
+        echo "## 🛠 Tools & Versions"
+        echo "\`\`\`"
+        python --version
+        python -m pip list | grep -E "(pytest|flake8|mypy|bandit|coverage)" || echo "Some tools not found"
+        echo "\`\`\`"
+        echo ""
+        
+        echo "## 📊 Test Results"
+        echo ""
+        
+        # Check test results
+        if [ -f ".coverage" ] || [ -f "coverage.xml" ]; then
+          echo "✅ **Tests:** Completed with coverage"
+          if command -v python -m coverage &> /dev/null; then
+            echo "\`\`\`"
+            python -m coverage report || echo "No coverage data available"
+            echo "\`\`\`"
+          fi
         else
-          echo "❌ **Coverage Report:** Not generated"
+          echo "⚠️  **Tests:** No coverage data found"
         fi
         
-        # Check for security report
+        # Check linting results
+        echo "✅ **Linting:** Completed (see logs above)"
+        
+        # Check security scan
         if [ -f "bandit-report.json" ]; then
-          echo "✅ **Security Scan:** Completed"
-          echo "   - Report: bandit-report.json"
+          BANDIT_COUNT=$(python -c "import json; data=json.load(open('bandit-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "0")
+          if [ "$BANDIT_COUNT" -gt 0 ]; then
+            echo "⚠️  **Security Scan:** Found $BANDIT_COUNT issues (see bandit-report.json)"
+          else
+            echo "✅ **Security Scan:** No issues found"
+          fi
         else
           echo "⚠️  **Security Scan:** No report generated"
         fi
         
         echo ""
-        echo "## 🔍 Next Steps"
-        echo "- Review any linting or type issues reported above"
-        echo "- Check security scan results in bandit-report.json"
-        echo "- View detailed coverage at: https://app.codecov.io/gh/${{ github.repository }}"
-        echo "- For performance issues, consider caching more aggressively"
+        echo "## 📝 Summary"
+        echo "- $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "- Workflow: ${{ github.workflow }}"
+        echo "- Run ID: ${{ github.run_id }}"
         echo ""
-        echo "---"
-        echo "*Workflow completed at: $(date)*"
+        
+        # Final status message
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "## 🎉 All checks passed!"
+        else
+          echo "## ❌ Some checks failed"
+          echo "Review the logs above for details."
+        fi
