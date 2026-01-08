@@ -32,4 +32,5 @@ def main_function() -> str:
     Returns:
         A greeting message.
     """
+    print("Executing main function...")
     return "Hello from the package!"
