@@ -5,14 +5,12 @@ name: Tests  # Name of the workflow displayed in GitHub Actions
 # ------------------------------------------------------------------
 env:
   # Package configuration
-  PACKAGE_NAME: 'mypackage'      # Change this to your actual package name
+  PACKAGE_NAME: 'mypackage'      # Your package name
   SOURCE_DIR: 'src'              # Directory containing source code
-  TESTS_DIR: '.'                 # Tests in current directory (adjust as needed)
-  DEV_DEPENDENCIES: 'dev'        # Extra dependencies for development
+  TESTS_DIR: 'tests'             # Tests directory
   
   # Tool configuration
-  USE_UV: 'true'                 # Set to 'false' to use pip instead of uv
-  VENV_DIR: '.venv'              # Virtual environment directory
+  USE_UV: 'false'                # Use pip for simplicity
   
   # Linting & analysis configuration
   FLAKE8_MAX_COMPLEXITY: '10'
@@ -21,13 +19,6 @@ env:
   
   # Security scanning configuration
   BANDIT_SKIP_TESTS: 'B101'      # Skip assert statements check (B101)
-  BANDIT_CONFIDENCE_LEVEL: 'high'  # Only report high confidence issues
-  BANDIT_SEVERITY_LEVEL: 'medium'  # Report medium and high severity issues
-  
-  # Testing configuration
-  COVERAGE_THRESHOLD: '0'        # Minimum coverage percentage (0 = no threshold)
-  COVERAGE_REPORT: 'xml'         # Coverage report format
-  PYTEST_ARGS: '-v --tb=short'   # Pytest arguments
 
 # ------------------------------------------------------------------
 # TRIGGERS: When this workflow runs
@@ -61,98 +52,60 @@ jobs:
     # 1. Checkout the repository code
     - name: Checkout repository
       uses: actions/checkout@v3
-      with:
-        fetch-depth: 0  # Fetch all history for proper version tagging
     
     # 2. Set up the specified Python version
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.python-version }}
+        cache: 'pip'  # Enable pip caching
     
-    # 3. Fix pyproject.toml license format (temporary fix for CI)
-    - name: Fix pyproject.toml for CI
-      run: |
-        # Fix the deprecated license format to avoid warnings
-        sed -i 's/license = {text = "MIT"}/license = "MIT"/g' pyproject.toml
-        echo "Fixed license format in pyproject.toml"
-    
-    # 4. Cache packages for faster builds
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/pip
-          ~/.cache/uv
-          ${{ env.VENV_DIR }}
-        key: ${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml', '**/setup.py', '**/requirements*.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.python-version }}-
-          ${{ runner.os }}-
-    
-    # 5. Install package dependencies - SIMPLIFIED
+    # 3. Install package dependencies
     - name: Install dependencies
       run: |
-        # Use pip instead of uv for now to avoid complexity
-        echo "Using pip for dependency installation..."
-        python -m pip install --upgrade pip setuptools wheel
+        echo "=== Installing dependencies ==="
+        python -m pip install --upgrade pip
         
-        # Install package in development mode
-        pip install -e ".[$DEV_DEPENDENCIES]"
+        # Install package with dev dependencies
+        pip install -e ".[dev]"
         
-        # Verify installations
+        # Install additional testing tools
+        pip install pytest-cov bandit
+        
         echo "=== Installed Packages ==="
         python -m pip list | grep -E "(pytest|cov|bandit|mypy|flake8)" || true
     
-    # 6. Linting with flake8 - EXCLUDING VENV
+    # 4. Linting with flake8
     - name: Lint with flake8
       run: |
-        echo "=== Running flake8 linting (excluding .venv) ==="
+        echo "=== Running flake8 linting ==="
         
-        # Build list of directories to lint
-        LINT_DIRS=""
-        
-        # Add source directory if it exists
+        # Lint source directory
         if [ -d "$SOURCE_DIR" ]; then
-          LINT_DIRS="$SOURCE_DIR"
           echo "Linting source directory: $SOURCE_DIR"
+          flake8 $SOURCE_DIR \
+            --exclude=$FLAKE8_EXCLUDE \
+            --max-complexity=$FLAKE8_MAX_COMPLEXITY \
+            --count \
+            --select=$FLAKE8_ERROR_CODES \
+            --show-source \
+            --statistics
         else
-          echo "No source directory found at '$SOURCE_DIR'"
+          echo "Warning: Source directory '$SOURCE_DIR' not found"
         fi
         
-        # Add tests directory if it exists and is not current directory
-        if [ -d "$TESTS_DIR" ] && [ "$TESTS_DIR" != "." ]; then
-          LINT_DIRS="$LINT_DIRS $TESTS_DIR"
+        # Lint tests directory
+        if [ -d "$TESTS_DIR" ]; then
           echo "Linting tests directory: $TESTS_DIR"
-        elif [ -d "tests" ]; then
-          LINT_DIRS="$LINT_DIRS tests"
-          echo "Linting tests directory: tests"
+          flake8 $TESTS_DIR \
+            --exclude=$FLAKE8_EXCLUDE \
+            --max-complexity=$FLAKE8_MAX_COMPLEXITY \
+            --count \
+            --exit-zero \
+            --statistics
         fi
-        
-        if [ -z "$LINT_DIRS" ]; then
-          echo "No directories to lint, checking for Python files in current directory..."
-          # Check if there are Python files in current directory
-          if find . -maxdepth 1 -name "*.py" | grep -q "."; then
-            LINT_DIRS="."
-            echo "Linting current directory"
-          else
-            echo "No Python files found to lint"
-            exit 0
-          fi
-        fi
-        
-        echo "Excluding: $FLAKE8_EXCLUDE"
-        
-        # Run flake8 with exclusions
-        flake8 $LINT_DIRS \
-          --exclude=$FLAKE8_EXCLUDE \
-          --count \
-          --select=$FLAKE8_ERROR_CODES \
-          --show-source \
-          --statistics \
-          --max-complexity=$FLAKE8_MAX_COMPLEXITY
     
-    # 7. Static type checking with mypy
+    # 5. Type checking with mypy
     - name: Type check with mypy
       run: |
         echo "=== Running mypy type checking ==="
@@ -162,85 +115,57 @@ jobs:
             --show-error-codes \
             --pretty
         else
-          echo "No source directory found at '$SOURCE_DIR', skipping mypy"
+          echo "No source directory found, skipping mypy"
         fi
     
-    # 8. Security scanning with bandit
+    # 6. Security scanning with bandit
     - name: Security scan with bandit
       run: |
         echo "=== Running bandit security scan ==="
-        # Determine source directory
         if [ -d "$SOURCE_DIR" ]; then
-          SCAN_DIR="$SOURCE_DIR"
+          bandit -r $SOURCE_DIR \
+            --skip "$BANDIT_SKIP_TESTS" \
+            -f txt \
+            || echo "Bandit scan completed (warnings are okay)"
         else
-          SCAN_DIR="."
-          echo "Warning: Scanning current directory instead of '$SOURCE_DIR'"
+          echo "No source directory found for security scan"
         fi
-        
-        # Run bandit security scanner with basic output
-        bandit \
-          -r $SCAN_DIR \
-          --skip "$BANDIT_SKIP_TESTS" \
-          -f txt \
-          || echo "Bandit scan completed (warnings are okay)"
     
-    # 9. Run tests with pytest
+    # 7. Run tests with pytest - USING CONFIG FROM pyproject.toml
     - name: Test with pytest
       run: |
-        echo "=== Running pytest with coverage ==="
+        echo "=== Running pytest ==="
         
-        # Determine where to run tests
-        TEST_PATH="."
-        if [ -d "tests" ]; then
-          TEST_PATH="tests"
-        elif [ -d "$TESTS_DIR" ] && [ "$TESTS_DIR" != "." ]; then
-          TEST_PATH="$TESTS_DIR"
+        # Run tests as configured in pyproject.toml
+        # Your addopts already has: -v --cov=mypackage --cov-report=term-missing
+        # We just need to add XML coverage report for CI
+        pytest --cov-report=xml
+        
+        # Show coverage summary
+        if [ -f "coverage.xml" ]; then
+          echo "=== Coverage Summary ==="
+          python -m coverage report
         fi
-        
-        echo "Running tests from: $TEST_PATH"
-        
-        # Run tests with coverage
-        pytest \
-          --cov=$PACKAGE_NAME \
-          --cov-report=xml \
-          --cov-report=term-missing \
-          -v \
-          $TEST_PATH
     
-    # 10. Upload coverage results to Codecov
+    # 8. Upload coverage results to Codecov
     - name: Upload coverage to Codecov
-      if: ${{ always() }}
       uses: codecov/codecov-action@v3
       with:
         file: ./coverage.xml
         fail_ci_if_error: false
         verbose: true
     
-    # 11. Test summary
+    # 9. Test summary
     - name: Generate Test Summary
       if: always()
       run: |
-        echo "# 🚀 CI/CD Test Summary"
-        echo ""
-        echo "## 📋 Environment"
-        echo "- Python Version: ${{ matrix.python-version }}"
-        echo "- Runner: ${{ runner.os }}"
-        echo "- Package: $PACKAGE_NAME"
-        echo ""
+        echo "=== Test Summary ==="
+        echo "✅ Python ${{ matrix.python-version }}"
+        echo "✅ Package: $PACKAGE_NAME"
+        echo "✅ Tests completed"
         
-        echo "## ✅ Checks Completed"
-        echo "- Linting: Done (excluded .venv)"
-        echo "- Type Checking: Done"
-        echo "- Security Scan: Done"
-        echo "- Tests: Done"
-        echo "- Coverage: Generated"
-        echo ""
-        
-        echo "## 📊 Coverage"
         if [ -f "coverage.xml" ]; then
-          echo "Coverage report available for upload"
-        else
-          echo "No coverage report generated"
+          echo "✅ Coverage report generated"
         fi
         
         echo ""
